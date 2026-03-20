@@ -1,0 +1,225 @@
+---
+title: "Time Series analysis on Exercise"
+author: 'Hoi Yan Leung (Student ID: 221117152)'
+date: "2026-03-16"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Project Introduction
+
+As someone that runs and exercises a lot in my free time, I wanted to understand people's interest in exercising and whether it has improved over the years.My time series is taken from Google Trends and gives information on the indexed search volume for the term "Exercise" in GB from 2011 to 2025 every month. 
+
+## Section 1: Explore the data 
+First, plot the time series and model it using simple linear regression. 
+
+```{r echo=FALSE}
+setwd("C:/Users/rache/OneDrive/Desktop/Year 4/Sem 2 - Time series/Coursework1_221117152")
+gb_exercise <- read.csv("GB_exercise_searchHistory.csv")
+gb_exercise <- ts(gb_exercise$exercise, start = c(2011, 1), frequency = 12)
+
+exercise_lm <- lm(gb_exercise ~ time(gb_exercise))
+plot(gb_exercise, main = "Web search volumne for exercise in GB", type = "l")
+abline(exercise_lm, col = "red")
+legend("topleft", legend=c("Original ts", "Linear reg"), fill=c("black", "red"))
+```
+
+The linear regression model shows a slightly positive trend, meaning the popularity of the term "exercise" has increased over time. The search history seems to have a seasonal pattern and it spiked during the covid-19 pandemic. The linear regression model is therefore not a good model as it cannot capture any seasonal patterns. 
+
+## Section 2: Explore the data with the decompose method
+
+Next, we can model the time series using the decompose method. This allows us to explore the trend, seasonality, and residual components of a time series.
+
+```{r echo=FALSE}
+exercise_decom <- decompose(gb_exercise, type = "additive")
+```
+### 2.1 Trend
+Trend component shows an gradual increase in search history for exercise from 2011 to 2020, followed by a spike in 2020 and 2021. Search history then drops back to pre-2020 levels in 2022 to 2024 and rises slightly in 2025.
+
+The gradual increase in search history from 2011 to 2020 can be explained by the increase availability of mobile phones and technology. As mobile phones are more accessible, people are able to use technology in their every day lives for non-work purposes. 
+
+The huge spike corresponds to the covid-19 pandemic, where people are stuck at home, hence have more time to consider exercise. 
+
+The search volume returns to pre-covid levels in 2022 after the loosening of covid restrictions in GB. 
+
+```{r echo=FALSE}
+plot(exercise_decom$trend, main = "Trend from the decomposed time series")
+```
+
+### 2.2 Seasonality
+Seasonality component shows a clear decreasing trend in search history for exercise over the year. It is interesting to see a high search history in January, and steep reductions between April to August and between November to December. An explanation for the high volume in January is most people try to loose weight after the holiday season and make new year resolutions during this month. Gradually over the year, people pay less attention on exercising hence search volume reduces.
+
+```{r echo=FALSE}
+plot(exercise_decom$figure, main = "Seasonality from the decomposed time series", type = "l")
+```
+
+### 2.3 Residuals
+Resdiual component shows huge residuals in 2020 and 2021. This is expected as the covid-19 pandemic happened during this period and model cannot capture these "unexpected circumstances" unless we add an additional model to model the effects of the pandemic. If we ignore the residuals from 2020 to 2021, the residuals look random.
+```{r echo=FALSE}
+plot(exercise_decom$random, main = "Resdiuals from the decomposed time series")
+#testing properties of residuals
+exercise_decom_resid <- zoo::na.trim(exercise_decom$random)
+```
+
+### 2.4 Investigating the residuals
+We can now test the properties of the residuals. Ideally, residuals should be stationary and follows white noise property. 
+
+#### 2.4.1 ADF Test
+Adf test is used to test if time series is stationary. The p-value for adf test is less than 5%, so residuals are stationary. 
+```{r}
+#adf test
+#H0: Time series is not stationary
+tseries::adf.test(exercise_decom_resid) #p-value = 0.01 < 0.05
+```
+#### 2.4.2 KPSS Test
+Another test used to test stationary property is the kpss test. P-value is greater than 5%, so we fail to reject H0 and the residuals are stationary.
+```{r}
+#kpss test
+#H0: Time series is stationary
+feasts::unitroot_kpss(exercise_decom_resid) #p-value = 0.1 > 0.5
+```
+#### 2.4.3 Ljung-Box Test
+Ljung-Box test is used to test if time series is white noise. The p-value for Ljung-Box test is less than 5%, so we reject H0 and the residuals are not white noise.
+```{r}
+#Ljung box test
+#H0: Time series is white noise
+Box.test(exercise_decom_resid, type = "Ljung-Box")
+```
+
+### 2.5 Subset the time series
+I took a subset of the time series so we model only post-covid data (after 2022), hoping the residuals will follow a white noise pattern. However, there is still auto-correlation in the residuals.
+```{r}
+exercise_subset <- window(gb_exercise, start = c(2022,1))
+exercise_subset_decom <- decompose(exercise_subset, type = "additive")
+plot(exercise_subset_decom)
+```
+```{r echo=FALSE}
+plot(exercise_subset_decom$random, main = "Residuals for post-covid model")
+exercise_subset_resid <- zoo::na.trim(exercise_decom$random)
+```
+
+```{r}
+tseries::adf.test(exercise_subset_resid)
+Box.test(exercise_subset_resid, type = "Ljung-Box")
+```
+
+## Section 3: Modelling the time series with Meta Prophet
+
+Meta Prophet is a time series forecasting tool based on an additive model. The package allows us to model yearly, weekly, daily seasonality and holiday effect. It is a open source software released by Meta (Formerly Facebook) We try to run Prophet on my time series to predict search history volume for the next 5 years. 
+
+### Section 3.1 Modelling the complete time series
+First, we model the complete time series using Prophet without subsetting it.
+```{r echo=FALSE}
+library(prophet)
+library(zoo)
+library(ggplot2)
+```
+
+```{r}
+#Defining the time series for Prophet
+ds <- as.yearmon(time(gb_exercise))
+y <- gb_exercise
+exercise_df <- data.frame(ds, y)
+
+prophet_m <- prophet(exercise_df, weekly.seasonality = FALSE,daily.seasonality = FALSE) 
+#disable weekly and daily seasonality as time series data is expressed in months
+
+prophet_time <- make_future_dataframe(prophet_m, periods = 60, freq = "month")
+# 5 years is equivalent to 60 periods
+
+prophet_pred <- predict(prophet_m, prophet_time)
+# make 5 years of predictions using the Prophet model
+
+plot(prophet_m, prophet_pred, xlab = "Time", ylab = "Search volume") +
+  ggtitle("Time series modelled using Prophet")
+```
+
+It looks like the model predicts a reduction in search volume for exercise in the next 5 years. I am speculative about this prediction as Covid certainly impacts the quality of my data.To remove the impact of covid, I applied the prophet to pre-covid and post-covid time frames and see what trends are obtained. 
+
+### Section 3.2 Modelling pre-covid time series (pre-2020)
+```{r echo}
+exercise_subset <- window(gb_exercise, end = c(2019,12))
+#subsets the time series for pre-2020 data
+```
+
+```{r echo=FALSE}
+ds <- as.yearmon(time(exercise_subset))
+y <- exercise_subset
+exercise_df <- data.frame(ds, y)
+prophet_model <- prophet(exercise_df, weekly.seasonality = FALSE,daily.seasonality = FALSE)
+prophet_time <- make_future_dataframe(prophet_model, periods = 60, freq = "month")
+prophet_pred <- predict(prophet_model, prophet_time)
+plot(prophet_model, prophet_pred, xlab = "Time", ylab = "Search volume") +
+  ggtitle("Pre-Covid subset modelled using Prophet")
+```
+
+Prophet predicts that search volume will display a decreasing trend over time. The decrease is driven by a reduction in search volume from 2017 to 2019. I would expect search volume to increase given increase awareness of the importance of exercise, but from a data perspective, search volume is predicted to decrease.
+
+### Section 3.3 Modelling post-covid time series (Post-2022 data)
+```{r}
+exercise_subset <- window(gb_exercise, start = c(2022,1))
+#subsets the time series for post-2022 data
+```
+```{r echo=FALSE}
+ds <- as.yearmon(time(exercise_subset))
+y <- exercise_subset
+exercise_df <- data.frame(ds, y)
+prophet_model <- prophet(exercise_df, weekly.seasonality = FALSE,daily.seasonality = FALSE)
+prophet_time <- make_future_dataframe(prophet_model, periods = 60, freq = "month")
+prophet_pred <- predict(prophet_model, prophet_time)
+plot(prophet_model, prophet_pred, xlab = "Time", ylab = "Search volume") +
+  ggtitle("Post-Covid subset modelled using Prophet")
+```
+
+We see that a increased search volume over the next 5 years. The increasing trend is driven by the increase in search volume from 2023 to 2025.
+
+# Section 4: Alternative modelling technique - ARIMA
+
+ARIMA is another widely used time series forecasting tool in R. It combines auto-regression, differencing, and moving average techniques to analyse a time series. Apply ARIMA to model post-covid data.
+```{r}
+library(forecast)
+exercise_subset <- window(gb_exercise, start = c(2022,1))
+forecast_arima <- forecast::forecast(exercise_subset, h = 60)
+time_arima <- seq(from = 2026, by = 1/12, length.out = 60)
+plot(forecast_arima, main = "ARIMA forecast")
+```
+
+ARIMA also predicts an increase in search volume for exercise in the next 5 years. However, the increase is less steep compared to Prophet's forecast.
+
+# Section 5: Compare modelled time series with 2026 data
+
+To test the modelled time series (from the Prophet and ARIMA method), we can compare the forecasts with actual data from January to March 2026.
+
+```{r}
+gb_exercise_26 <- c(54, 57, 47)
+#Data points extracted directly from google trends instead of loading a csv file
+gb_exercise_26 <- ts(gb_exercise_26, start = c(2026,1), frequency = 12)
+gb_exercise_26 <- ts(c(gb_exercise, gb_exercise_26), start = c(2011,1), frequency = 12)
+plot(gb_exercise_26, main = "Web search volumne for exercise in GB", type = "l")
+```
+
+## 5.1 Compasion with Prophet forecast
+```{r echo=FALSE}
+p_filtered <- prophet_pred[prophet_pred$ds <= as.Date("2026-03-01"), ]
+gb_exercise_26_filtered <- window(gb_exercise_26, start = c(2022,01))
+p_2026 <- data.frame(Time=as.Date(gb_exercise_26_filtered), ts= gb_exercise_26_filtered, p=p_filtered$yhat)
+
+plot(p_2026$Time, p_2026$ts, type = "l", main = "2026 Web search volumne for exercise in GB")
+lines(p_2026$Time, p_2026$p, col = "red")
+legend("topleft", legend = c("Actual ts", "Prophet pred"), fill = c("black", "red") ,cex = 0.75)
+
+```
+
+## 5.2 Comparison with ARIMA forecast
+```{r}
+plot(forecast_arima, main = "ARIMA forecast")
+lines(gb_exercise_26, col="red")
+lines(gb_exercise)
+legend("topleft", legend=c("2011-2025 ts", "2026 ts", "ARIMA"), fill=c("black", "red", "deepskyblue"), cex = 0.6)
+
+```
+ARIMA is under-predicting search history. In reality, more poeple in GB are searching the term “Exercise" than expected.
+
+## 5.3 Summary
+In summary, both the Prophet and ARIMA forecasts under-predict the actual search volume in 2026 which shows the popularity of exercise this year has grown more than expected.
